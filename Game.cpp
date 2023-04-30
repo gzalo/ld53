@@ -1,7 +1,9 @@
-#ifdef WIN32
-#include <windows.h>
-#include <fcntl.h>
-#endif
+#include <GL/gl.h>
+#include <cstdlib>
+#include <ctime>
+#include <random>
+#include <algorithm>
+#include <iomanip>
 #include "Game.h"
 #include "graphics.h"
 #include "collisions.h"
@@ -12,28 +14,28 @@ using namespace std;
 #ifdef __EMSCRIPTEN__
 #include <emscripten.h>
 #endif
-#include <GL/gl.h>
-#include <cstdlib>
-#include <ctime>
-#include <random>
-#include <algorithm>
-#include <iomanip>
 
 double random(double min, double max){
     random_device rd;
     mt19937 gen(rd());
-    uniform_real_distribution<double> dis(min, max);
+    uniform_real_distribution<> dis(min, max);
+    return dis(gen);
+}
+int randomInt(int min, int max){
+    random_device rd;
+    mt19937 gen(rd());
+    uniform_int_distribution<> dis(min, max);
     return dis(gen);
 }
 double random01(){
     random_device rd;
     mt19937 gen(rd());
-    uniform_real_distribution<double> unif(0, 1);
+    uniform_real_distribution<> unif(0, 1);
     return unif(gen);
 }
 
 void mainLoopCallback(void *arg) {
-    Game* game = static_cast<Game*>(arg);
+    auto game = static_cast<Game*>(arg);
 
     if(game->mainLoop() == 0){
         #ifdef __EMSCRIPTEN__
@@ -49,22 +51,25 @@ int Game::run() {
 #else
     while(mainLoop()) {
         SDL_Delay(0);
-    };
+    }
 #endif
     return 0;
 }
 
-Game::Game(const int width, const int height){
-
-    srand(time(NULL));
-
+Game::Game(const int width, const int height): screenWidth(width), screenHeight(height){
     SDL_Init(SDL_INIT_EVERYTHING);
 
-    window = SDL_CreateWindow("",
+    window = SDL_CreateWindow("Energy Delivery",
                               SDL_WINDOWPOS_CENTERED,
                               SDL_WINDOWPOS_CENTERED,
                               width, height,
-                              SDL_WINDOW_OPENGL);
+                              SDL_WINDOW_OPENGL |SDL_WINDOW_RESIZABLE);
+
+    if( Mix_OpenAudio( 44100, MIX_DEFAULT_FORMAT, 2, 2048 ) < 0 ){
+        exit(1);
+    }
+    Mix_Volume(-1, MIX_MAX_VOLUME*0.9);
+    Mix_VolumeMusic(MIX_MAX_VOLUME*0.9);
 
     SDL_GL_CreateContext(window);
 
@@ -94,6 +99,8 @@ Game::Game(const int width, const int height){
     sinkTextures.push_back(createFontTextureFromSurface(sink1Surface));
     auto sink2Surface = loadImage("res/sink2.png");
     sinkTextures.push_back(createFontTextureFromSurface(sink2Surface));
+    auto sink3Surface = loadImage("res/sink3.png");
+    sinkTextures.push_back(createFontTextureFromSurface(sink3Surface));
 
     auto source0Surface = loadImage("res/source0.png");
     sourceTextures.push_back(createFontTextureFromSurface(source0Surface));
@@ -121,11 +128,34 @@ Game::Game(const int width, const int height){
     auto health1Surface = loadImage("res/health1.png");
     health1Texture = createFontTextureFromSurface(health1Surface);
 
+    auto gauge0Surface = loadImage("res/gauge0.png");
+    gauge0Texture = createFontTextureFromSurface(gauge0Surface);
+    auto gauge1Surface = loadImage("res/gauge1.png");
+    gauge1Texture = createFontTextureFromSurface(gauge1Surface);
+    auto gauge2Surface = loadImage("res/gauge2.png");
+    gauge2Texture = createFontTextureFromSurface(gauge2Surface);
+
+    auto btnAddSurface = loadImage("res/btnadd.png");
+    btnAddTexture = createFontTextureFromSurface(btnAddSurface);
+    auto btnRemSurface = loadImage("res/btnrem.png");
+    btnRemTexture = createFontTextureFromSurface(btnRemSurface);
+    auto btnPauseSurface = loadImage("res/btnpause.png");
+    btnPauseTexture = createFontTextureFromSurface(btnPauseSurface);
+
+    createWireSfx = Mix_LoadWAV("res/sfx/create_wire.wav");
+    deleteWireSfx = Mix_LoadWAV("res/sfx/delete_wire.wav");
+    clickSfx = Mix_LoadWAV("res/sfx/click.wav");
+    gameOverSfx = Mix_LoadWAV("res/sfx/game_over.wav");
+    levelUpSfx = Mix_LoadWAV("res/sfx/level_up.wav");
+    warningSfx = Mix_LoadWAV("res/sfx/warning.wav");
+    menuMusic = Mix_LoadMUS("res/menu_music.wav");
+    music = Mix_LoadMUS("res/music.wav");
+
     levelInit();
 
-    screenWidth = width;
-    screenHeight = height;
+    Mix_PlayMusic(menuMusic, -1 );
 }
+
 Game::~Game(){
     SDL_DestroyWindow(window);
     SDL_Quit();
@@ -134,17 +164,8 @@ Game::~Game(){
 void Game::handleKeyUp(const SDL_Event &event) {
     switch (event.key.keysym.sym) {
         case SDLK_SPACE:
-            handleSpaceKey();
+            handleSpaceOrLeftButton();
             break;
-        /*case SDLK_1:
-            selectedWireSize = 1;
-            break;
-        case SDLK_2:
-            selectedWireSize = 2;
-            break;
-        case SDLK_3:
-            selectedWireSize = 3;
-            break;*/
         case SDLK_w:
             upKey = false;
             break;
@@ -159,10 +180,10 @@ void Game::handleKeyUp(const SDL_Event &event) {
 void Game::handleKeyDown(const SDL_Event &event) {
     switch (event.key.keysym.sym) {
         case SDLK_ESCAPE:
-            if(state == PLAYING){
-                state = PAUSED;
-            } else if(state == PAUSED){
-                state = PLAYING;
+            if(state == GameState::PLAYING){
+                pauseGame();
+            } else if(state == GameState::PAUSED){
+                resumeGame();
             }
             break;
         case SDLK_w:
@@ -171,12 +192,31 @@ void Game::handleKeyDown(const SDL_Event &event) {
         case SDLK_s:
             downKey = true;
             break;
+        case SDLK_m:
+            mute = !mute;
+            Mix_Volume(-1, mute ? 0 : MIX_MAX_VOLUME*0.9);
+            Mix_VolumeMusic(mute ? 0 : MIX_MAX_VOLUME*0.9);
+            break;
         case SDLK_g:
-            state = GAMEOVER;
+            state = GameState::GAMEOVER;
+            Mix_PlayChannel( -1, gameOverSfx, 0 );
+            Mix_HaltMusic();
             break;
         default:
             break;
     }
+}
+
+void Game::resumeGame() {
+    Mix_PlayChannel(-1, clickSfx, 0 );
+    Mix_ResumeMusic();
+    state = GameState::PLAYING;
+}
+
+void Game::pauseGame() {
+    Mix_PlayChannel(-1, clickSfx, 0 );
+    Mix_PauseMusic();
+    state = GameState::PAUSED;
 }
 
 
@@ -190,23 +230,27 @@ int Game::mainLoop() {
     SDL_Event event;
     while (SDL_PollEvent(&event)) {
         if (event.type == SDL_QUIT) return 0;
+        if (event.window.event == SDL_WINDOWEVENT_RESIZED){
+            screenWidth = event.window.data1;
+            screenHeight = event.window.data2;
+
+            glViewport(0,0,screenWidth, screenHeight);
+            glMatrixMode(GL_PROJECTION);
+            glLoadIdentity();
+            glOrtho(0, screenWidth, screenHeight, 0, -1, 1);
+            glMatrixMode(GL_MODELVIEW);
+            glLoadIdentity();
+        }
         if (event.type == SDL_KEYDOWN){
             handleKeyDown(event);
         }
         if (event.type == SDL_KEYUP) {
             handleKeyUp(event);
         }
-        if(state == PLAYING) {
-            if (event.type == SDL_MOUSEBUTTONDOWN) {
-                if (event.button.button == SDL_BUTTON_LEFT)
-                    onMouseLeftDown();
-            }
-            if (event.type == SDL_MOUSEBUTTONUP) {
-                if (event.button.button == SDL_BUTTON_LEFT)
-                    onMouseLeftUp();
-                if (event.button.button == SDL_BUTTON_RIGHT)
-                    onMouseRightUp();
-            }
+        if(state == GameState::PLAYING) {
+            handlePlayingMouse(event);
+        } else if (event.type == SDL_MOUSEBUTTONUP && event.button.button == SDL_BUTTON_LEFT) {
+            handleSpaceOrLeftButton();
         }
         if(event.type == SDL_MOUSEMOTION) {
             mouseX = event.motion.x;
@@ -217,13 +261,13 @@ int Game::mainLoop() {
     }
 
     // Camera movement
-    if(state == PLAYING) {
+    /*if(state == GameState::PLAYING) {
         mCamYOffset -= mCamY;
         if (upKey) mCamYOffset += 10;
         if (downKey) mCamYOffset -= 10;
     }
     if(mCamYOffset > 0 ) mCamYOffset = 0;
-    if(mCamYOffset < -maxScroll + screenHeight) mCamYOffset = -maxScroll + screenHeight;
+    if(mCamYOffset < -maxScroll + screenHeight) mCamYOffset = -maxScroll + screenHeight;*/
 
     mouseXWorld = mouseX;
     mouseYWorld = mouseY - mCamYOffset;
@@ -231,7 +275,7 @@ int Game::mainLoop() {
     // Game logic
 
     timeFrames++;
-    if(timeFrames%30 == 0 && state == PLAYING){
+    if(timeFrames%30 == 0 && state == GameState::PLAYING){
         updateSinksAndSources();
         updateCables();
         calculateEnergyDelivery();
@@ -240,22 +284,24 @@ int Game::mainLoop() {
             levelUp();
         }
         if(health <= 0){
-            state = GAMEOVER;
+            state = GameState::GAMEOVER;
+            Mix_PlayChannel( -1, gameOverSfx, 0 );
+            Mix_HaltMusic();
         }
     }
 
     // Render
-    drawRect(backgroundTexture, 0, 0, screenWidth, screenHeight);
+    drawRectPot(backgroundTexture, 0, 0, screenWidth, screenHeight, 800.0/1024.0, 600.0/1024.0);
 
     glTranslated(0, mCamYOffset, 0);
-    if(dragStart != NULL){
-        if(state != PLAYING) {
-            dragStart = NULL;
+    if(dragStart != nullptr){
+        if(state != GameState::PLAYING) {
+            dragStart = nullptr;
         } else {
             renderPendingCable();
         }
     }
-    if(state == PLAYING || state == PAUSED || state == GAMEOVER) {
+    if(state == GameState::PLAYING || state == GameState::PAUSED || state == GameState::GAMEOVER) {
         renderCables();
         renderSinks();
         renderSources();
@@ -269,54 +315,82 @@ int Game::mainLoop() {
     return 1;
 }
 
-void Game::renderSinks() {
-    for(int i=0;i<sinks.size();i++) {
-        if(sinks[i]->warning){
+void Game::handlePlayingMouse(const SDL_Event &event) {
+    if (event.type == SDL_MOUSEBUTTONDOWN && event.button.button == SDL_BUTTON_LEFT) {
+        onMouseLeftDown();
+    }
+    if (event.type == SDL_MOUSEBUTTONUP) {
+        if (event.button.button == SDL_BUTTON_LEFT)
+            onMouseLeftUp();
+        if (event.button.button == SDL_BUTTON_RIGHT)
+            deleteClosestCable();
+    }
+}
+
+void Game::renderSinks() const{
+    for(auto & sink : sinks) {
+        if(sink->warning){
             glColor4d(1.0, 0.0, 0.0, 1.0);
         } else {
             glColor4d(1.0, 1.0, 1.0, 1.0);
         }
-        glColor4d(1.0, 1.0, 1.0, 1.0);
-        drawRect(sinkTextures[sinks[i]->type], sinks[i]->xPos, sinks[i]->yPos, elementWidth, elementHeight);
+        drawRect(sinkTextures[sink->type], sink->xPos, sink->yPos, elementWidth, elementHeight);
+/*
         stringstream ss;
-        char direction = getDirectionChar(sinks[i]->direction);
-        ss << direction << setw(2) << round(sinks[i]->required);
+        char direction = getDirectionChar(sink->direction);
+        ss << direction << setw(2) << round(sink->required);
         glColor4d(0.0, 0.0, 0.0, 1.0);
-        drawText(fontTexture, ss.str(), sinks[i]->xPos + elementWidth + 18, sinks[i]->yPos+24);
+        drawNumericText(fontTexture, ss.str(), sink->xPos + elementWidth/2-4, sink->yPos+elementHeight-4);
+*/
+        glColor4d(1.0, 1.0, 1.0, 1.0);
+        drawRect(gauge0Texture, sink->xPos, sink->yPos, 4, 64);
+        drawPartialVerticalRect(gauge1Texture, sink->xPos, sink->yPos, 4, 64, sink->required / maxRequiredEver);
 
     }
     glColor4d(1.0, 1.0, 1.0, 1.0);
 }
 
-void Game::renderSources() {
-    for(int i=0;i<sources.size();i++) {
+void Game::renderSources() const{
+    for(auto & source : sources) {
         glColor4d(1.0, 1.0, 1.0, 1.0);
-        drawRect(sourceTextures[sources[i]->type], sources[i]->xPos, sources[i]->yPos, elementWidth, elementHeight);
-        stringstream ss;
-        char direction = getDirectionChar(sources[i]->direction);
-        ss << direction << setw(2) << round(sources[i]->generated);
+        drawRect(sourceTextures[source->type], source->xPos, source->yPos, elementWidth, elementHeight);
+
+        /*stringstream ss;
+        char direction = getDirectionChar(source->direction);
+        ss << direction << setw(2) << round(source->generated);
         glColor4d(0.0, 0.0, 0.0, 1.0);
-        drawText(fontTexture, ss.str(), sources[i]->xPos - 46, sources[i]->yPos+30);
+        drawNumericText(fontTexture, ss.str(), source->xPos + elementWidth/2-4, source->yPos+elementHeight-4);*/
+
+        glColor4d(1.0, 1.0, 1.0, 1.0);
+        drawRect(gauge0Texture, source->xPos, source->yPos, 4, 64);
+        drawPartialVerticalRect(gauge2Texture, source->xPos, source->yPos, 4, 64, source->generated / maxGeneratedEver);
     }
     glColor4d(1.0, 1.0, 1.0, 1.0);
 }
 
-void Game::renderCables() {
+void Game::renderCables() const{
     glColor4d( 0, 0, 0, 255 );
 
-    for(int i=0;i<cables.size();i++) {
-        Cable c = cables[i];
-
-        glLineWidth(c.size);
+    for(auto const& c : cables) {
+        glLineWidth((float)c.size);
 
         glDisable(GL_TEXTURE_2D);
         setCableColor(c.health);
 
+        auto dx = c.right->xPos - c.left->xPos;
+        auto dy = c.right->yPos - c.left->yPos;
+        auto len = sqrt(dx*dx+dy*dy);
+        auto normalX = -dy/len;
+        auto normalY = dx/len;
+
+        auto offsetX = (c.offset-1)*5 * normalX;
+        auto offsetY = (c.offset-1)*5 * normalY;
+
         glBegin(GL_LINES);
-        glVertex3d(c.left->xPos+elementWidth/2,
-                   c.left->yPos+elementHeight/2+(c.offset-1)*5, 0);
-        glVertex3d(c.right->xPos+elementWidth/2,
-                   c.right->yPos+elementHeight/2+(c.offset-1)*5, 0);
+        glVertex3f(c.left->xPos+elementWidth/2+offsetX,
+                   c.left->yPos+elementHeight/2+offsetY, 0);
+        glVertex3f(c.right->xPos+elementWidth/2+offsetX,
+                   c.right->yPos+elementHeight/2+offsetY, 0);
         glEnd();
 
     }
@@ -325,14 +399,35 @@ void Game::renderCables() {
 }
 
 void Game::onMouseLeftDown() {
-    dragStart = findClosestSource();
+    if(addWires) {
+        dragStart = findClosestSource();
+    }
 }
 
 void Game::onMouseLeftUp() {
-    if(dragStart != NULL){
+    if(mouseX > xBtn + xBtnSeparation*2 && mouseX < xBtn + xBtnSeparation*2 + wBtn &&
+       mouseY > yBtn && mouseY < yBtn + hBtn){
+        pauseGame();
+    }
+    if(mouseX > xBtn && mouseX < xBtn + wBtn &&
+       mouseY > yBtn && mouseY < yBtn + hBtn){
+        addWires = true;
+        dragStart = nullptr;
+    }
+    if(mouseX > xBtn + xBtnSeparation && mouseX < xBtn + xBtnSeparation + wBtn &&
+       mouseY > yBtn && mouseY < yBtn + hBtn){
+        addWires = false;
+        dragStart = nullptr;
+    }
+
+    if(!addWires){
+        deleteClosestCable();
+    }
+
+    if(addWires && dragStart != nullptr){
         Sink *dragEnd = findClosestSink();
-        if(dragEnd == NULL){
-            dragStart = NULL;
+        if(dragEnd == nullptr){
+            dragStart = nullptr;
             return;
         }
 
@@ -342,7 +437,7 @@ void Game::onMouseLeftUp() {
         // 2 -> 5
         int offset = calculateAndUpdateOffset(dragStart, dragEnd);
         if(offset == -1){
-            dragStart = NULL;
+            dragStart = nullptr;
             return;
         }
 
@@ -353,42 +448,43 @@ void Game::onMouseLeftUp() {
         c.offset = offset;
         c.health = 5;
         cables.push_back(c);
-        dragStart = NULL;
+        dragStart = nullptr;
+        Mix_PlayChannel( -1, createWireSfx, 0 );
     }
 }
 
 Source *Game::findClosestSource() {
-    for(int i=0;i<sources.size();i++){
-        if( ( mouseXWorld > sources[i]->xPos ) && ( mouseXWorld < sources[i]->xPos + elementWidth ) &&
-            ( mouseYWorld > sources[i]->yPos ) && ( mouseYWorld < sources[i]->yPos + elementHeight ) ) {
-            return sources[i];
+    for(auto & source : sources){
+        if( ( mouseXWorld > source->xPos ) && ( mouseXWorld < source->xPos + elementWidth ) &&
+            ( mouseYWorld > source->yPos ) && ( mouseYWorld < source->yPos + elementHeight ) ) {
+            return source;
         }
     }
-    return NULL;
+    return nullptr;
 }
 
 Sink *Game::findClosestSink() {
-    for(int i=0;i<sinks.size();i++){
-        if( ( mouseXWorld > sinks[i]->xPos ) && ( mouseXWorld < sinks[i]->xPos + elementWidth ) &&
-            ( mouseYWorld > sinks[i]->yPos ) && ( mouseYWorld < sinks[i]->yPos + elementHeight ) ) {
-            return sinks[i];
+    for(auto & sink : sinks){
+        if( ( mouseXWorld > sink->xPos ) && ( mouseXWorld < sink->xPos + elementWidth ) &&
+            ( mouseYWorld > sink->yPos ) && ( mouseYWorld < sink->yPos + elementHeight ) ) {
+            return sink;
         }
     }
-    return NULL;
+    return nullptr;
 }
 
-void Game::renderPendingCable() {
+void Game::renderPendingCable() const{
     glColor4d( 0, 0, 0, 1.0 );
 
-    glLineWidth(selectedWireSize);
+    glLineWidth((float)selectedWireSize);
 
     glDisable(GL_TEXTURE_2D);
     glColor4d(0.0, 0.0, 0.0, 1.0);
 
     glBegin(GL_LINES);
-    glVertex3d(dragStart->xPos+elementWidth/2,
+    glVertex3f(dragStart->xPos+elementWidth/2,
                dragStart->yPos+elementHeight/2, 0);
-    glVertex3d(mouseXWorld,
+    glVertex3f(mouseXWorld,
                mouseYWorld, 0);
     glEnd();
 
@@ -396,13 +492,14 @@ void Game::renderPendingCable() {
     glEnable(GL_TEXTURE_2D);
 }
 
-void Game::onMouseRightUp() {
+void Game::deleteClosestCable() {
     int cableIndex = findClosestCable();
 
     if(cableIndex != -1){
         Cable c = cables[cableIndex];
         removeOffset(c.left, c.right, c.offset);
         cables.erase(cables.begin() + cableIndex);
+        Mix_PlayChannel( -1, deleteWireSfx, 0 );
     }
 }
 
@@ -423,17 +520,25 @@ int Game::findClosestCable() {
 
 
 double Game::getCableDistance(int i) {
-    Source *source = cables[i].left;
-    Sink *sink = cables[i].right;
-    return distance_between_line_and_point(make_pair(source->xPos+elementWidth/2, source->yPos+elementHeight/2+(cables[i].offset-1)*5),
-                                           make_pair(sink->xPos+elementWidth/2, sink->yPos+elementHeight/2+(cables[i].offset-1)*5),
+    Source const *source = cables[i].left;
+    Sink const *sink = cables[i].right;
+
+    auto dx = sink->xPos - source->xPos;
+    auto dy = sink->yPos - source->yPos;
+    auto len = sqrt(dx*dx+dy*dy);
+    auto normalX = -dy/len;
+    auto normalY = dx/len;
+
+    auto offsetX = (cables[i].offset-1)*5 * normalX;
+    auto offsetY = (cables[i].offset-1)*5 * normalY;
+
+    return distance_between_line_and_point(make_pair(source->xPos+elementWidth/2+offsetX, source->yPos+elementHeight/2+offsetY),
+                                           make_pair(sink->xPos+elementWidth/2+offsetX, sink->yPos+elementHeight/2+offsetY),
                                            make_pair(mouseXWorld, mouseYWorld));
 }
 
 int Game::calculateAndUpdateOffset(Source *pSource, Sink *pSink) {
     auto key = make_pair(pSource, pSink);
-    auto offset = offsets.find(key);
-
     auto offsetMask = offsets[key];
 
     if(offsetMask == 0b000){
@@ -471,26 +576,32 @@ int Game::calculateAndUpdateOffset(Source *pSource, Sink *pSink) {
         return 0;
     }
 
-    if(offsetMask == 0b111){
-        return -1;
-    }
+    // 0b111 or others
     return -1;
 }
 
-void Game::updateSinksAndSources() {
+void Game::updateSinksAndSources() const{
     for(auto & sink : sinks){
         sink->direction += random(-1, 1) * 0.2;
         sink->required += sink->direction;
         sink->required = clamp(sink->required, 0.0, maxRequiredEver);
+
+        if(sink->required <= 0.1 && sink->direction < 0){
+            sink->direction *= -1;
+        }
     }
     for(auto & source : sources){
         source->direction += random(-1, 1) * 0.2;
         source->generated += source->direction;
         source->generated = clamp(source->generated, 0.0, maxGeneratedEver);
+
+        if(source->generated <= 0.1 && source->direction < 0){
+            source->direction *= -1;
+        }
     }
 }
 
-char Game::getDirectionChar(double direction) {
+char Game::getDirectionChar(double direction) const{
     if(direction > 0.8) return 1;
     if(direction < -0.8) return 2;
     if(direction > 0.5) return 5;
@@ -498,32 +609,60 @@ char Game::getDirectionChar(double direction) {
     return 0;
 }
 
-void Game::renderUi() {
-    if(state == INTRO0){
-        drawRect(intro0Texture, 0, 0, screenWidth, screenHeight);
-    } else if(state == INTRO1){
-        drawRect(intro1Texture, 0, 0, screenWidth, screenHeight);
-    } else if(state == INTRO2){
-        drawRect(intro2Texture, 0, 0, screenWidth, screenHeight);
-    }else if(state == INTRO3){
-        drawRect(intro3Texture, 0, 0, screenWidth, screenHeight);
-    } else if(state == PLAYING || state == PAUSED){
-        drawRect(health0Texture, 750, 10, 32, 256);
-        drawPartialVerticalRect(health1Texture, 750, 10, 32, 256, health/100.0);
+void Game::renderUi() const{
+    if(state == GameState::INTRO0){
+        drawRectPot(intro0Texture, 0, 0, screenWidth, screenHeight, 800.0/1024.0, 600.0/1024.0);
+    } else if(state == GameState::INTRO1){
+        drawRectPot(intro1Texture, 0, 0, screenWidth, screenHeight, 800.0/1024.0, 600.0/1024.0);
+    } else if(state == GameState::INTRO2){
+        drawRectPot(intro2Texture, 0, 0, screenWidth, screenHeight, 800.0/1024.0, 600.0/1024.0);
+    }else if(state == GameState::INTRO3){
+        drawRectPot(intro3Texture, 0, 0, screenWidth, screenHeight, 800.0/1024.0, 600.0/1024.0);
+    } else if(state == GameState::PLAYING || state == GameState::PAUSED){
+        drawRect(health0Texture, 538, 16, 256, 32);
+        drawPartialHorizontalRect(health1Texture, 538, 16, 256, 32, health/100.0);
+
+        if(addWires) {
+            glColor4d(0.6, 1.0, 0.6, 1.0);
+        } else {
+            glColor4d(1.0, 1.0, 1.0, 1.0);
+        }
+        drawRect(btnAddTexture, xBtn, yBtn, wBtn, hBtn);
+
+        if(!addWires) {
+            glColor4d(0.6, 1.0, 0.6, 1.0);
+        } else {
+            glColor4d(1.0, 1.0, 1.0, 1.0);
+        }
+        drawRect(btnRemTexture, xBtn + xBtnSeparation, yBtn, wBtn, hBtn);
+
+        glColor4d(1.0, 1.0, 1.0, 1.0);
+        drawRect(btnPauseTexture, xBtn + 2*xBtnSeparation, yBtn, wBtn, hBtn);
 
         stringstream ssScore;
         ssScore << "Score: " << score;
         glColor4d(0.0, 0.0, 0.0, 1.0);
-        drawText(fontTexture, ssScore.str(), 10, 10);
+        drawText(fontTexture, ssScore.str(), 10, 6);
 
-        if(state == PAUSED){
-            drawRect(pausedTexture, 0, 0, screenWidth, screenHeight);
+        stringstream ssGenerators;
+        ssGenerators << "Generators: " << sources.size();
+        glColor4d(0.0, 0.0, 0.0, 1.0);
+        drawText(fontTexture, ssGenerators.str(), 10, 26);
+
+        stringstream ssCities;
+        ssCities << "Cities: " << sinks.size();
+        glColor4d(0.0, 0.0, 0.0, 1.0);
+        drawText(fontTexture, ssCities.str(), 10, 46);
+
+        if(state == GameState::PAUSED){
+            glColor4d(1.0, 1.0, 1.0, 1.0);
+            drawRectPot(pausedTexture, 0, 0, screenWidth, screenHeight, 800.0/1024.0, 600.0/1024.0);
         }
     }
 
     glColor4d(1.0, 1.0, 1.0, 1.0);
-    if(state == GAMEOVER){
-        drawRect(gameOverTexture, 0, 0, screenWidth, screenHeight);
+    if(state == GameState::GAMEOVER){
+        drawRectPot(gameOverTexture, 0, 0, screenWidth, screenHeight, 800.0/1024.0, 600.0/1024.0);
 
         stringstream ssScore;
         ssScore << score;
@@ -532,8 +671,8 @@ void Game::renderUi() {
 
 }
 
-void Game::setCableColor(int health) {
-    switch(health){
+void Game::setCableColor(int cableHealth) const{
+    switch(cableHealth){
         case 5:
             glColor4d(0.0, 0.0, 0.0, 1);
             break;
@@ -556,12 +695,12 @@ void Game::setCableColor(int health) {
 }
 
 void Game::updateCables() {
-    for(int i=0;i<cables.size();i++){
+    for(auto & cable : cables){
         if(random(0, 10) > 9){
-            cables[i].health--;
+            cable.health--;
         }
-        if(cables[i].health == 0){
-            removeOffset(cables[i].left, cables[i].right, cables[i].offset);
+        if(cable.health == 0){
+            removeOffset(cable.left, cable.right, cable.offset);
         }
     }
 
@@ -569,37 +708,58 @@ void Game::updateCables() {
                            [](const Cable & c) { return c.health == 0; }),cables.end());
 }
 
+pair<int, int> Game::getRandomGridPosition(){
+    if(grid.size() >= gridW * gridH){
+        // No more spaces
+        return make_pair(-1, -1);
+    }
+
+    while(true) {
+        int x = randomInt(0, gridW - 1);
+        int y = randomInt(0, gridH - 1);
+
+        auto pair = make_pair(x, y);
+        if (!grid[pair]) {
+            grid[pair] = true;
+            return pair;
+        }
+    }
+}
+
 void Game::levelInit() {
     sinks.clear();
     sources.clear();
     cables.clear();
     offsets.clear();
+    grid.clear();
 
-    for(int i=0;i<3;i++){
-        Sink *s = new Sink();
-        s->xPos = 500;
-        s->yPos = 100 + i * verticalSeparation;
+    for(int i=0;i<1;i++){
+        auto *s = new Sink();
+        auto position = getRandomGridPosition();
+        s->xPos = position.first * gridSeparationW;
+        s->yPos = position.second * gridSeparationH + gridStartY;
         s->required = random(requiredMin, requiredMax);
         s->direction = 0;
         s->warning = false;
-        s->type = rand()%sinkTextures.size();
+        s->type = randomInt(0, (int)sinkTextures.size()-1);
         sinks.push_back(s);
     }
 
     for(int i=0;i<2;i++){
-        Source *s = new Source();
-        s->xPos = 100;
-        s->yPos = 100 + i * verticalSeparation;
+        auto *s = new Source();
+        auto position = getRandomGridPosition();
+        s->xPos = position.first * gridSeparationW;
+        s->yPos = position.second * gridSeparationH + gridStartY;
         s->generated = random(generatedMin, generatedMax);
         s->direction = 0;
-        s->type = rand()%sourceTextures.size();
+        s->type = randomInt(0,(int)sourceTextures.size()-1);
         sources.push_back(s);
     }
 
-    for(int i=0;i<5;i++){
+    for(int i=0;i<2;i++){
         Cable c;
-        c.left = sources[i%2];
-        c.right = sinks[i%3];
+        c.left = sources[i];
+        c.right = sinks[0];
         auto offset = calculateAndUpdateOffset(c.left, c.right);
         c.size = 3;
         c.offset = offset;
@@ -609,65 +769,68 @@ void Game::levelInit() {
 
     health = 100;
     score = 0;
-    mCamYOffset = 0;
 }
 
 void Game::calculateEnergyDelivery() {
     // Reset all sources and sinks
-    for(int i=0;i<sources.size();i++) {
-        sources[i]->current = sources[i]->generated;
+    for(auto & source : sources) {
+        source->current = source->generated;
     }
-    for(int i=0;i<sinks.size();i++) {
-        sinks[i]->current = 0;
+    for(auto & sink : sinks) {
+        sink->current = 0;
     }
 
-    for(int i=0;i<sources.size();i++){
+    for(auto & source : sources){
 
         // find all cables connected to source
         vector<Cable*> connectedCables;
-        for(int j=0;j<cables.size();j++){
-            if(cables[j].left == sources[i]){
-                connectedCables.push_back(&cables[j]);
+        for(auto & cable : cables){
+            if(cable.left == source){
+                connectedCables.push_back(&cable);
             }
         }
 
         // split energy in equal parts
-        double split = sources[i]->current / (double)connectedCables.size();
-        int connectedCablesRemaining = connectedCables.size();
+        double split = source->current / (double)connectedCables.size();
+        size_t connectedCablesRemaining = connectedCables.size();
 
         // try to fill sinks that aren't already full
-        for(int j=0;j<connectedCables.size();j++){
-            auto missingDelta = connectedCables[j]->right->required - connectedCables[j]->right->current;
+        for(auto & connectedCable : connectedCables){
+            auto missingDelta = connectedCable->right->required - connectedCable->right->current;
             connectedCablesRemaining--;
             if(missingDelta > split){
                 // Can fit all split
-                connectedCables[j]->right->current += split;
-                sources[i]->current -= split;
+                connectedCable->right->current += split;
+                source->current -= split;
             } else {
                 // Split is too much
-                connectedCables[j]->right->current += missingDelta;
-                sources[i]->current -= missingDelta;
+                connectedCable->right->current += missingDelta;
+                source->current -= missingDelta;
                 // Excess energy causes split to change
-                split = sources[i]->current / connectedCablesRemaining;
+                split = source->current / (double)connectedCablesRemaining;
             }
         }
     }
 
     // Check if any sink is not fully filled
     bool anySinkMissingEnergy = false;
-    for(int i=0;i<sinks.size();i++) {
-        auto required = sinks[i]->required;
-        auto delta = abs(sinks[i]->current - required);
+    for(auto & sink : sinks) {
+        auto required = sink->required;
+        auto delta = abs(sink->current - required);
         if(delta > 1) {
             anySinkMissingEnergy = true;
-            sinks[i]->warning = true;
+            sink->warning = true;
         }else{
-            sinks[i]->warning = false;
+            sink->warning = false;
         }
     }
 
     if(anySinkMissingEnergy) {
         health--;
+
+        if(health%25==0){
+            Mix_PlayChannel( -1, warningSfx, 0 );
+        }
     }
 }
 
@@ -693,24 +856,31 @@ void Game::levelUp() {
     bool addSink = randomNum <= 0.4 || randomNum >= 0.9;
 
     if(addSource) {
-        Source *source = new Source();
-        source->xPos = 100;
-        source->yPos = sources[sources.size() - 1]->yPos + verticalSeparation;
-        source->generated = random(generatedMin, generatedMax);
-        source->direction = 0;
-        source->type = rand()%sourceTextures.size();
-        sources.push_back(source);
+        auto position = getRandomGridPosition();
+        if(position.first != -1) {
+            auto source = new Source();
+            source->xPos = position.first * gridSeparationW;
+            source->yPos = position.second * gridSeparationH + gridStartY;
+            source->generated = random(generatedMin, generatedMax);
+            source->direction = 0;
+            source->type = randomInt(0, (int) sourceTextures.size() - 1);
+            sources.push_back(source);
+        }
     }
 
     if(addSink) {
-        Sink *sink = new Sink();
-        sink->xPos = 500;
-        sink->yPos = sinks[sinks.size() - 1]->yPos + verticalSeparation;
-        sink->required = random(requiredMin, requiredMax);
-        sink->direction = 0;
-        sink->warning = false;
-        sink->type = rand()%sinkTextures.size();
-        sinks.push_back(sink);
+        auto position = getRandomGridPosition();
+
+        if(position.first != -1) {
+            auto sink = new Sink();
+            sink->xPos = position.first * gridSeparationW;
+            sink->yPos = position.second * gridSeparationH + gridStartY;
+            sink->required = random(requiredMin, requiredMax);
+            sink->direction = 0;
+            sink->warning = false;
+            sink->type = randomInt(0, (int) sinkTextures.size() - 1);
+            sinks.push_back(sink);
+        }
     }
 
     Cable c;
@@ -720,29 +890,37 @@ void Game::levelUp() {
     c.offset = calculateAndUpdateOffset(c.left, c.right);
     c.health = 5;
     cables.push_back(c);
+
+    Mix_PlayChannel( -1, levelUpSfx, 0 );
 }
 
 void Game::handleMouseMotion() {
+    /*
     if(mouseY > screenHeight - scrollWindow){
         mCamY = (mouseY - (screenHeight - scrollWindow)) / scrollFactor;
     } else if(mouseY < scrollWindow) {
         mCamY = -(scrollWindow - mouseY) / scrollFactor;
     } else {
         mCamY = 0;
-    }
+    }*/
 }
 
-void Game::handleSpaceKey() {
-    if(state == INTRO0) {
-        state = INTRO1;
-    } else if(state == INTRO1){
-        state = INTRO2;
-    } else if(state == INTRO2){
-        state = INTRO3;
-    } else if(state == INTRO3){
-        state = PLAYING;
+void Game::handleSpaceOrLeftButton() {
+    if(state == GameState::INTRO0) {
+        state = GameState::INTRO1;
+    } else if(state == GameState::INTRO1){
+        state = GameState::INTRO2;
+    } else if(state == GameState::INTRO2){
+        state = GameState::INTRO3;
+    } else if(state == GameState::INTRO3){
+        state = GameState::PLAYING;
         levelInit();
-    } else if(state == GAMEOVER){
-        state = INTRO0;
+        Mix_PlayMusic(music, -1 );
+    } else if(state == GameState::GAMEOVER){
+        state = GameState::INTRO0;
+        Mix_PlayMusic(menuMusic, -1 );
+    } else if(state == GameState::PAUSED) {
+        resumeGame();
     }
+    Mix_PlayChannel( -1, clickSfx, 0 );
 }

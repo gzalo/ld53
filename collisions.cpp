@@ -4,7 +4,7 @@
 
 #include "collisions.h"
 #include <cmath>
-
+using namespace std;
 // From ChatGPT (Snippet to calculate distance between line (defined by two points) and a point and can you make it so that points ouside the defined ones work as pills?)
 double distance_between_line_and_point(pair<double, double> p1, pair<double, double> p2, pair<double, double> p) {
     double x1 = p1.first;

@@ -1,7 +1,3 @@
-//
-// Created by Gzalo on 28/4/2023.
-//
-
 #ifndef LD53_CABLE_H
 #define LD53_CABLE_H
 
@@ -19,4 +15,4 @@ public:
 };
 
 
-#endif //LD53_CABLE_H
+#endif

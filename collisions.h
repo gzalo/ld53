@@ -1,13 +1,8 @@
-//
-// Created by Gzalo on 29/4/2023.
-//
+#include <algorithm>
 
 #ifndef LD53_COLLISIONS_H
 #define LD53_COLLISIONS_H
 
-#include <algorithm>
-using namespace std;
-double distance_between_line_and_point(pair<double, double> p1, pair<double, double> p2, pair<double, double> p);
+double distance_between_line_and_point(std::pair<double, double> p1, std::pair<double, double> p2, std::pair<double, double> p);
 
-
-#endif //LD53_COLLISIONS_H
+#endif

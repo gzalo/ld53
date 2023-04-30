@@ -1,0 +1,25 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>Energy Delivery</title>
+</head>
+<body>
+    <canvas id="canvas" oncontextmenu="event.preventDefault()" style="margin: 0 auto; display: block;"></canvas>
+
+    <button onclick="test()" style="margin: 16px auto; display: block;">Enable Music and sound effects</button>
+    <div style="text-align:center; font-family: sans-serif;">Press M to mute audio</div>
+    <div style="text-align:center; font-family: sans-serif;">Built by <a href="https://gzalo.com">gzalo</a> in &lt;48 hs for <a href="https://ldjam.com/events/ludum-dare/53">Ludum Dare 53</a>.<br><a href="https://github.com/gzalo/ld53">Access source code</a></div>
+
+    <script type='text/javascript'>
+        var Module = {
+            canvas: (function() { return document.getElementById('canvas'); })()
+        };
+        function test(){
+            console.log("OK");
+        }
+    </script>
+
+    {{{ SCRIPT }}}
+</body>
+</html>

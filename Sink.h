@@ -1,14 +1,11 @@
-//
-// Created by Gzalo on 28/4/2023.
-//
-
 #ifndef LD53_SINK_H
 #define LD53_SINK_H
 
 
 class Sink {
 public:
-    double xPos, yPos;
+    double xPos;
+    double yPos;
     double required;
     double direction;
     double current;
@@ -17,4 +14,4 @@ public:
 };
 
 
-#endif //LD53_SINK_H
+#endif

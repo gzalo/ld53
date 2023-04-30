@@ -1,16 +1,17 @@
-#ifndef LD53_GAME_H
-#define LD53_GAME_H
-
-#include <SDL2/SDL.h>
-#include <GL/gl.h>
-#include <vector>
-#include <map>
-using namespace std;
 #include "Sink.h"
 #include "Source.h"
 #include "Cable.h"
 
-enum GameState{
+#ifndef LD53_GAME_H
+#define LD53_GAME_H
+
+#include <SDL2/SDL.h>
+#include <SDL2/SDL_mixer.h>
+#include <GL/gl.h>
+#include <vector>
+#include <map>
+
+enum class GameState{
     INTRO0,
     INTRO1,
     INTRO2,
@@ -46,17 +47,29 @@ private:
     const int verticalSeparation = 85;
 
     const double requiredMin = 10.0;
-    const double requiredMax = 25.0;
-    const double generatedMin = 10.0;
+    const double requiredMax = 20.0;
+    const double generatedMin = 15.0;
     const double generatedMax = 50.0;
-    const double maxRequiredEver = 80.0;
-    const double maxGeneratedEver = 100.0;
+    const double maxRequiredEver = 50.0;
+    const double maxGeneratedEver = 50.0;
     const int maxScroll = 2048;
+    const int selectedWireSize = 3;
+    const int gridW = 12; // 800 / 66
+    const int gridH = 8; // (600-64) / 67
+    const int gridSeparationW = 66;
+    const int gridSeparationH = 67;
+    const int gridStartY = 64;
+
+    const int yBtn = 0;
+    const int xBtn = 290;
+    const int xBtnSeparation = 68;
+    const int wBtn = 64;
+    const int hBtn = 64;
 
     SDL_Window *window;
 
-    vector<GLuint> sinkTextures;
-    vector<GLuint> sourceTextures;
+    std::vector<GLuint> sinkTextures;
+    std::vector<GLuint> sourceTextures;
     GLuint fontTexture;
     GLuint backgroundTexture;
     GLuint pausedTexture;
@@ -67,37 +80,53 @@ private:
     GLuint gameOverTexture;
     GLuint health0Texture;
     GLuint health1Texture;
+    GLuint gauge0Texture;
+    GLuint gauge1Texture;
+    GLuint gauge2Texture;
+    GLuint btnAddTexture;
+    GLuint btnRemTexture;
+    GLuint btnPauseTexture;
+    Mix_Chunk *createWireSfx;
+    Mix_Chunk *clickSfx;
+    Mix_Chunk *deleteWireSfx;
+    Mix_Chunk *gameOverSfx;
+    Mix_Chunk *levelUpSfx;
+    Mix_Chunk *warningSfx;
+    Mix_Music *menuMusic;
+    Mix_Music *music;
+    bool mute = false;
 
     int mouseX = 0;
     int mouseY = 0;
     int mouseXWorld = 0;
     int mouseYWorld = 0;
-    int mCamY = 0;
-    int mCamYOffset = 0;
-    int selectedWireSize = 3;
+    const int mCamY = 0;
+    const int mCamYOffset = 0;
     bool upKey = false;
     bool downKey = false;
+    bool addWires = true;
 
-    Source *dragStart = NULL;
+    Source *dragStart = nullptr;
     int timeFrames = 0;
 
     // Part of game core
-    vector<Sink*> sinks;
-    vector<Source*> sources;
-    vector<Cable> cables;
-    map<pair<Source*,Sink*>, int> offsets;
+    std::vector<Sink*> sinks;
+    std::vector<Source*> sources;
+    std::vector<Cable> cables;
+    std::map<std::pair<Source*,Sink*>, int> offsets;
+    std::map<std::pair<int, int>, bool> grid;
     int health = 0;
-    GameState state = INTRO0;
+    GameState state = GameState::INTRO0;
     int score = 0;
 
     void handleKeyUp(const SDL_Event &event);
     void handleKeyDown(const SDL_Event &event);
 
-    void renderSinks();
+    void renderSinks() const;
 
-    void renderSources();
+    void renderSources() const;
 
-    void renderCables();
+    void renderCables() const;
 
     void onMouseLeftDown();
 
@@ -107,9 +136,9 @@ private:
 
     Sink *findClosestSink();
 
-    void renderPendingCable();
+    void renderPendingCable() const;
 
-    void onMouseRightUp();
+    void deleteClosestCable();
 
     int findClosestCable();
 
@@ -117,13 +146,13 @@ private:
 
     int calculateAndUpdateOffset(Source *pSource, Sink *pSink);
 
-    void updateSinksAndSources();
+    void updateSinksAndSources() const;
 
-    char getDirectionChar(double direction);
+    char getDirectionChar(double direction) const;
 
-    void renderUi();
+    void renderUi() const;
 
-    void setCableColor(int health);
+    void setCableColor(int health) const;
 
     void updateCables();
 
@@ -137,8 +166,15 @@ private:
 
     void handleMouseMotion();
 
-    void handleSpaceKey();
+    void handleSpaceOrLeftButton();
 
+    void handlePlayingMouse(const SDL_Event &event);
+
+    void pauseGame();
+
+    void resumeGame();
+
+    std::pair<int, int> getRandomGridPosition();
 };
 
 #endif
